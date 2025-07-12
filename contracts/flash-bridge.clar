@@ -330,3 +330,50 @@
     (asserts! (>= stacks-block-height (get dispute-deadline channel))
       ERR-DISPUTE-PERIOD
     )
+    ;; Execute final settlement
+    (try! (as-contract (stx-transfer? proposed-balance-a tx-sender tx-sender)))
+    (try! (as-contract (stx-transfer? proposed-balance-b tx-sender participant-b)))
+    ;; Complete channel closure
+    (map-set payment-channels {
+      channel-id: channel-id,
+      participant-a: tx-sender,
+      participant-b: participant-b,
+    }
+      (merge channel {
+        is-open: false,
+        balance-a: u0,
+        balance-b: u0,
+        total-deposited: u0,
+      })
+    )
+    (ok true)
+  )
+)
+
+;; READ-ONLY QUERY FUNCTIONS
+
+;; Retrieves comprehensive channel information
+(define-read-only (get-channel-info
+    (channel-id (buff 32))
+    (participant-a principal)
+    (participant-b principal)
+  )
+  (map-get? payment-channels {
+    channel-id: channel-id,
+    participant-a: participant-a,
+    participant-b: participant-b,
+  })
+)
+
+;; EMERGENCY & ADMINISTRATIVE FUNCTIONS
+
+;; Emergency fund recovery mechanism (contract owner only)
+(define-public (emergency-withdraw)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (try! (stx-transfer? (stx-get-balance (as-contract tx-sender))
+      (as-contract tx-sender) CONTRACT-OWNER
+    ))
+    (ok true)
+  )
+)
