@@ -220,3 +220,113 @@
     (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
     (asserts! (<= balance-a (get total-deposited channel)) ERR-INVALID-INPUT)
     (asserts! (<= balance-b (get total-deposited channel)) ERR-INVALID-INPUT)
+    (asserts! (get is-open channel) ERR-CHANNEL-CLOSED)
+    ;; Dual signature verification
+    (asserts!
+      (and
+        (verify-signature message signature-a tx-sender)
+        (verify-signature message signature-b participant-b)
+      )
+      ERR-INVALID-SIGNATURE
+    )
+    ;; Conservation of funds validation
+    (asserts! (is-eq total-channel-funds (+ balance-a balance-b))
+      ERR-INSUFFICIENT-FUNDS
+    )
+    ;; Execute fund distribution
+    (try! (as-contract (stx-transfer? balance-a tx-sender tx-sender)))
+    (try! (as-contract (stx-transfer? balance-b tx-sender participant-b)))
+    ;; Finalize channel closure
+    (map-set payment-channels {
+      channel-id: channel-id,
+      participant-a: tx-sender,
+      participant-b: participant-b,
+    }
+      (merge channel {
+        is-open: false,
+        balance-a: u0,
+        balance-b: u0,
+        total-deposited: u0,
+      })
+    )
+    (ok true)
+  )
+)
+
+;; Initiates unilateral channel closure with dispute period
+(define-public (initiate-unilateral-close
+    (channel-id (buff 32))
+    (participant-b principal)
+    (proposed-balance-a uint)
+    (proposed-balance-b uint)
+    (signature (buff 65))
+  )
+  (let (
+      (channel (unwrap!
+        (map-get? payment-channels {
+          channel-id: channel-id,
+          participant-a: tx-sender,
+          participant-b: participant-b,
+        })
+        ERR-CHANNEL-NOT-FOUND
+      ))
+      (total-channel-funds (get total-deposited channel))
+      ;; Create state commitment message
+      (message (concat (concat channel-id (uint-to-buff proposed-balance-a))
+        (uint-to-buff proposed-balance-b)
+      ))
+    )
+    ;; Comprehensive validation suite
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-signature signature) ERR-INVALID-INPUT)
+    (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
+    (asserts! (get is-open channel) ERR-CHANNEL-CLOSED)
+    ;; Cryptographic state verification
+    (asserts! (verify-signature message signature tx-sender)
+      ERR-INVALID-SIGNATURE
+    )
+    ;; Balance conservation check
+    (asserts!
+      (is-eq total-channel-funds (+ proposed-balance-a proposed-balance-b))
+      ERR-INSUFFICIENT-FUNDS
+    )
+    ;; Initiate dispute period (approximately 7 days)
+    (map-set payment-channels {
+      channel-id: channel-id,
+      participant-a: tx-sender,
+      participant-b: participant-b,
+    }
+      (merge channel {
+        dispute-deadline: (+ stacks-block-height u1008), ;; ~7 days at 10-minute blocks
+        balance-a: proposed-balance-a,
+        balance-b: proposed-balance-b,
+      })
+    )
+    (ok true)
+  )
+)
+
+;; Finalizes unilateral channel closure after dispute period
+(define-public (resolve-unilateral-close
+    (channel-id (buff 32))
+    (participant-b principal)
+  )
+  (let (
+      (channel (unwrap!
+        (map-get? payment-channels {
+          channel-id: channel-id,
+          participant-a: tx-sender,
+          participant-b: participant-b,
+        })
+        ERR-CHANNEL-NOT-FOUND
+      ))
+      (proposed-balance-a (get balance-a channel))
+      (proposed-balance-b (get balance-b channel))
+    )
+    ;; Basic validation
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
+    ;; Enforce dispute period completion
+    (asserts! (>= stacks-block-height (get dispute-deadline channel))
+      ERR-DISPUTE-PERIOD
+    )
